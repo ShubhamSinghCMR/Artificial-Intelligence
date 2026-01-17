@@ -20,6 +20,9 @@ from config.settings import (
     TECHNICAL_DEPTH_KEYWORDS
 )
 from llm.inference import analyze_answer
+from config.logging_config import get_logger
+
+logger = get_logger('evaluation.scorer')
 
 
 def score_answer(question, answer, context=None, use_llm=True):
@@ -61,7 +64,7 @@ def score_answer(question, answer, context=None, use_llm=True):
                 scores['overall'] = calculate_overall_score(scores)
                 return scores
         except Exception as e:
-            print(f"LLM analysis failed, using heuristics: {e}")
+        logger.warning(f"LLM analysis failed, using heuristics: {e}")
     
     # Fallback to heuristic scoring
     return score_answer_heuristic(question, answer, context)

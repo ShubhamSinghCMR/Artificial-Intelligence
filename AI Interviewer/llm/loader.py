@@ -18,6 +18,9 @@ from config.settings import (
     LLM_N_THREADS,
     LLM_N_GPU_LAYERS
 )
+from config.logging_config import get_logger
+
+logger = get_logger('llm.loader')
 
 
 # Global model cache
@@ -79,10 +82,10 @@ def load_llm_model(model_path=None, use_fallback=False):
         print("Please download the LLaMA-3-8B-Instruct GGUF model and place it in the models/ directory")
         return None
     
-    print(f"Loading LLM model: {model_file}")
-    print(f"  Context window: {LLM_CONTEXT_WINDOW}")
-    print(f"  Threads: {LLM_N_THREADS}")
-    print(f"  GPU layers: {LLM_N_GPU_LAYERS}")
+        logger.info(f"Loading LLM model: {model_file}")
+        logger.debug(f"  Context window: {LLM_CONTEXT_WINDOW}")
+        logger.debug(f"  Threads: {LLM_N_THREADS}")
+        logger.debug(f"  GPU layers: {LLM_N_GPU_LAYERS}")
     
     try:
         # Load model
@@ -100,15 +103,15 @@ def load_llm_model(model_path=None, use_fallback=False):
         else:
             _llm_model = model
         
-        print("Model loaded successfully!")
+        logger.info("Model loaded successfully!")
         return model
     
     except Exception as e:
-        print(f"ERROR loading model: {e}")
-        print("\nTroubleshooting:")
-        print("1. Make sure the model file is a valid GGUF format")
-        print("2. Check if you have enough RAM (8B model needs ~8-10GB)")
-        print("3. Try reducing n_ctx (context window) if memory is limited")
+        logger.error(f"ERROR loading model: {e}")
+        logger.error("Troubleshooting:")
+        logger.error("1. Make sure the model file is a valid GGUF format")
+        logger.error("2. Check if you have enough RAM (8B model needs ~8-10GB)")
+        logger.error("3. Try reducing n_ctx (context window) if memory is limited")
         return None
 
 

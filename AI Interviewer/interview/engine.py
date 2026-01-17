@@ -28,6 +28,9 @@ from config.settings import (
     STT_CHUNK_DURATION,
     MIN_QUESTION_INTERVAL
 )
+from config.logging_config import get_logger
+
+logger = get_logger('interview.engine')
 
 
 class InterviewEngine:
@@ -62,69 +65,83 @@ class InterviewEngine:
         # Timing
         self.last_ocr_time = 0
         self.last_stt_time = 0
+        
+        # Answer capture
+        self.waiting_for_answer = False
+        self.current_question_id = None
+        self.answer_buffer = []  # Accumulate speech for answer
+        self.answer_start_time = None
+        self.answer_timeout = 60.0  # Max time to wait for answer
     
     def start(self):
         """Start the interview session."""
-        print("="*60)
-        print("Starting AI Interviewer")
-        print("="*60)
+        logger.info("="*60)
+        logger.info("Starting AI Interviewer")
+        logger.info("="*60)
         
         # Initialize audio capture
-        print("\nInitializing audio capture...")
+        logger.info("Initializing audio capture...")
         self.audio_p, self.audio_stream = create_audio_stream()
         if self.audio_stream is None:
-            print("ERROR: Failed to initialize audio capture")
+            logger.error("Failed to initialize audio capture")
             return False
         
-        print("✓ Audio capture initialized")
+        logger.info("Audio capture initialized")
         
         # Start capture thread
         self.is_running = True
         self.capture_thread = threading.Thread(target=self._capture_loop, daemon=True)
         self.capture_thread.start()
+        logger.debug("Capture thread started")
         
         # Start processing thread
         self.processing_thread = threading.Thread(target=self._processing_loop, daemon=True)
         self.processing_thread.start()
+        logger.debug("Processing thread started")
         
-        print("\n✓ Interview engine started")
-        print("Press Ctrl+C to stop\n")
+        logger.info("Interview engine started")
+        logger.info("Press Ctrl+C to stop")
         
         return True
     
     def stop(self):
         """Stop the interview session."""
-        print("\n" + "="*60)
-        print("Stopping AI Interviewer")
-        print("="*60)
+        logger.info("="*60)
+        logger.info("Stopping AI Interviewer")
+        logger.info("="*60)
         
         self.is_running = False
+        logger.debug("Set is_running = False")
         
         # Stop audio
         if self.audio_stream:
             self.audio_stream.stop_stream()
             self.audio_stream.close()
+            logger.debug("Audio stream closed")
         if self.audio_p:
             self.audio_p.terminate()
+            logger.debug("PyAudio terminated")
         
         # Wait for threads
         if self.capture_thread:
             self.capture_thread.join(timeout=2.0)
+            logger.debug("Capture thread joined")
         if self.processing_thread:
             self.processing_thread.join(timeout=2.0)
+            logger.debug("Processing thread joined")
         
         # End session
         end_session(self.state)
         
         # Print stats
         stats = get_session_stats(self.state)
-        print("\nSession Statistics:")
-        print(f"  Duration: {stats['duration_minutes']:.1f} minutes")
-        print(f"  Questions asked: {stats['question_count']}")
-        print(f"  Answers received: {stats['answer_count']}")
-        print(f"  Topics discussed: {stats['topics_discussed']}")
+        logger.info("Session Statistics:")
+        logger.info(f"  Duration: {stats['duration_minutes']:.1f} minutes")
+        logger.info(f"  Questions asked: {stats['question_count']}")
+        logger.info(f"  Answers received: {stats['answer_count']}")
+        logger.info(f"  Topics discussed: {stats['topics_discussed']}")
         
-        print("\n✓ Interview session ended")
+        logger.info("Interview session ended")
     
     def _capture_loop(self):
         """Main capture loop (runs in separate thread)."""
@@ -147,7 +164,7 @@ class InterviewEngine:
                 time.sleep(0.1)
             
             except Exception as e:
-                print(f"Error in capture loop: {e}")
+                logger.error(f"Error in capture loop: {e}", exc_info=True)
                 time.sleep(1.0)
     
     def _processing_loop(self):
@@ -174,6 +191,10 @@ class InterviewEngine:
                         self._process_audio(audio_data, audio_time)
                         self.last_stt_time = current_time
                 
+                # Check for answers if waiting
+                if self.waiting_for_answer:
+                    self._check_for_answer(current_time)
+                
                 # Check for questions
                 self._check_and_ask_questions()
                 
@@ -181,7 +202,7 @@ class InterviewEngine:
                 time.sleep(0.5)
             
             except Exception as e:
-                print(f"Error in processing loop: {e}")
+                logger.error(f"Error in processing loop: {e}", exc_info=True)
                 time.sleep(1.0)
     
     def _process_frame(self, frame, timestamp):
@@ -202,7 +223,7 @@ class InterviewEngine:
                     fused = fuse_ocr_and_transcript(ocr_result, None, self.state)
             
         except Exception as e:
-            print(f"Error processing frame: {e}")
+            logger.error(f"Error processing frame: {e}", exc_info=True)
     
     def _process_audio(self, audio_data, timestamp):
         """Process audio chunk with STT."""
@@ -222,13 +243,18 @@ class InterviewEngine:
                 else:
                     fused = fuse_ocr_and_transcript(None, transcript_result, self.state)
                 
-                # Print transcript (for debugging)
+                # Log transcript
                 text = transcript_result.get('text', '').strip()
                 if text:
-                    print(f"\n[STUDENT]: {text}")
+                    logger.info(f"[STUDENT]: {text}")
+                    
+                    # If waiting for answer, accumulate it
+                    if self.waiting_for_answer:
+                        self.answer_buffer.append(text)
+                        logger.debug(f"Answer buffer updated: {len(self.answer_buffer)} chunks")
         
         except Exception as e:
-            print(f"Error processing audio: {e}")
+            logger.error(f"Error processing audio: {e}", exc_info=True)
     
     def _check_and_ask_questions(self):
         """Check triggers and ask questions if appropriate."""
@@ -256,7 +282,7 @@ class InterviewEngine:
                 self._ask_followup_question(followup['question_id'])
         
         except Exception as e:
-            print(f"Error checking questions: {e}")
+            logger.error(f"Error checking questions: {e}", exc_info=True)
     
     def _ask_initial_question(self):
         """Ask the initial question."""
@@ -266,18 +292,25 @@ class InterviewEngine:
             
             if question_info and question_info.get('question'):
                 question = question_info['question']
-                print(f"\n{'='*60}")
-                print(f"[INTERVIEWER]: {question}")
-                print(f"{'='*60}\n")
+                logger.info("="*60)
+                logger.info(f"[INTERVIEWER]: {question}")
+                logger.info("="*60)
                 
                 # Add to state
+                question_id = self.state.get('question_count', 0)
                 add_context_entry(self.state, 'question', question, {
-                    'question_id': self.state.get('question_count', 0),
+                    'question_id': question_id,
                     'is_initial': True
                 })
+                
+                # Start waiting for answer
+                self.waiting_for_answer = True
+                self.current_question_id = question_id
+                self.answer_start_time = time.time()
+                self.answer_buffer = []
         
         except Exception as e:
-            print(f"Error asking initial question: {e}")
+            logger.error(f"Error asking initial question: {e}", exc_info=True)
     
     def _ask_question(self, trigger_type=None):
         """Ask a question based on trigger."""
@@ -290,19 +323,26 @@ class InterviewEngine:
             
             if question_info and question_info.get('question'):
                 question = question_info['question']
-                print(f"\n{'='*60}")
-                print(f"[INTERVIEWER]: {question}")
-                print(f"  (Trigger: {trigger_type or 'time-based'})")
-                print(f"{'='*60}\n")
+                logger.info("="*60)
+                logger.info(f"[INTERVIEWER]: {question}")
+                logger.info(f"  (Trigger: {trigger_type or 'time-based'})")
+                logger.info("="*60)
                 
                 # Add to state
+                question_id = self.state.get('question_count', 0)
                 add_context_entry(self.state, 'question', question, {
-                    'question_id': self.state.get('question_count', 0),
+                    'question_id': question_id,
                     'trigger_type': trigger_type
                 })
+                
+                # Start waiting for answer
+                self.waiting_for_answer = True
+                self.current_question_id = question_id
+                self.answer_start_time = time.time()
+                self.answer_buffer = []
         
         except Exception as e:
-            print(f"Error asking question: {e}")
+            logger.error(f"Error asking question: {e}", exc_info=True)
     
     def _ask_followup_question(self, question_id):
         """Ask a follow-up question."""
@@ -311,19 +351,121 @@ class InterviewEngine:
             
             if question_info and question_info.get('question'):
                 question = question_info['question']
-                print(f"\n{'='*60}")
-                print(f"[INTERVIEWER] (Follow-up): {question}")
-                print(f"{'='*60}\n")
+                logger.info("="*60)
+                logger.info(f"[INTERVIEWER] (Follow-up): {question}")
+                logger.info("="*60)
                 
                 # Add to state
+                new_question_id = self.state.get('question_count', 0)
                 add_context_entry(self.state, 'question', question, {
-                    'question_id': self.state.get('question_count', 0),
+                    'question_id': new_question_id,
                     'parent_question_id': question_id,
                     'is_followup': True
                 })
+                
+                # Start waiting for answer
+                self.waiting_for_answer = True
+                self.current_question_id = new_question_id
+                self.answer_start_time = time.time()
+                self.answer_buffer = []
         
         except Exception as e:
-            print(f"Error asking follow-up: {e}")
+            logger.error(f"Error asking follow-up: {e}", exc_info=True)
+    
+    def _check_for_answer(self, current_time):
+        """Check if answer has been received."""
+        try:
+            # Check timeout
+            if self.answer_start_time and (current_time - self.answer_start_time) > self.answer_timeout:
+                logger.warning("Answer timeout. Moving to next question.")
+                self.waiting_for_answer = False
+                self.answer_buffer = []
+                return
+            
+            # If we have accumulated answer text, process it
+            if self.answer_buffer:
+                # Wait a bit for more speech (in case student is still talking)
+                time_since_last = current_time - self.last_stt_time
+                
+                # If no new speech for 3 seconds, consider answer complete
+                if time_since_last > 3.0:
+                    answer_text = " ".join(self.answer_buffer).strip()
+                    
+                    if len(answer_text) > 10:  # Minimum answer length
+                        self._process_answer(answer_text)
+                        self.answer_buffer = []
+                        self.waiting_for_answer = False
+        
+        except Exception as e:
+            print(f"Error checking for answer: {e}")
+    
+    def _process_answer(self, answer_text):
+        """Process and store student answer."""
+        try:
+            from context.state import add_context_entry
+            from evaluation.scorer import score_answer
+            from context.fusion import get_context_for_llm
+            
+            logger.info(f"Answer received: {answer_text[:100]}...")
+            
+            # Get context for scoring
+            context = get_context_for_llm(self.state, seconds=60)
+            
+            # Get the question
+            questions = self.state.get('questions', [])
+            question = None
+            for q in questions:
+                if q.get('question_id') == self.current_question_id:
+                    question = q.get('question', '')
+                    break
+            
+            if question:
+                # Score the answer
+                scores = score_answer(question, answer_text, context, use_llm=False)
+                
+                # Add to state
+                add_context_entry(self.state, 'answer', answer_text, {
+                    'question_id': self.current_question_id,
+                    'scores': scores
+                })
+                
+                logger.info(f"Answer scored - Overall: {scores['overall']:.1f}/10.0")
+                logger.info(f"  Technical Depth: {scores['technical_depth']:.1f}")
+                logger.info(f"  Clarity: {scores['clarity']:.1f}")
+                logger.info(f"  Understanding: {scores['understanding']:.1f}")
+            else:
+                # Add answer without scoring if question not found
+                add_context_entry(self.state, 'answer', answer_text, {
+                    'question_id': self.current_question_id
+                })
+        
+        except Exception as e:
+            logger.error(f"Error processing answer: {e}", exc_info=True)
+    
+    def _capture_manual_answer(self):
+        """Capture answer via manual input (fallback)."""
+        try:
+            print("\n[SYSTEM]: Waiting for answer...")
+            print("(Type your answer and press Enter, or speak your answer)")
+            print("(Press Enter with empty line to skip)\n")
+            
+            # Try to get input (non-blocking would be better, but this works)
+            import select
+            import sys
+            
+            # Simple input for now (can be enhanced with threading)
+            answer = input("[YOUR ANSWER]: ").strip()
+            
+            if answer:
+                self._process_answer(answer)
+                self.waiting_for_answer = False
+                return True
+            
+            return False
+        
+        except Exception as e:
+            print(f"Error capturing manual answer: {e}")
+            return False
     
     def run(self):
         """Run the interview (blocking)."""
