@@ -1,0 +1,9 @@
+fastapi
+uvicorn
+opencv-python
+pytesseract
+pyaudio
+numpy
+torch
+openai-whisper
+mss
