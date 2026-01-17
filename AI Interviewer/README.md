@@ -49,14 +49,57 @@ This system automatically:
         +----------+-------------+
         |                        |
         v                        v
-[ Question Generator ]   [ Follow-up Controller ]
+[ Question Generator ]   [ Answer Scorer ]
         |                        |
         +----------+-------------+
                    v
-             [ Evaluation Engine ]
-                   |
-                   v
            [ Score + Feedback ]
+```
+
+### Interview Flow (Turn-Based)
+
+```
+┌─────────────────────────────────────────┐
+│ 1. LISTENING STATE                      │
+│    • System listens and accumulates     │
+│      candidate speech                   │
+│    • Real-time transcription displayed  │
+│    • Detects 3 seconds of silence       │
+└──────────────┬──────────────────────────┘
+               │
+               v (Silence > 3s)
+┌─────────────────────────────────────────┐
+│ 2. CANDIDATE STOPPED                    │
+│    • Shows full transcription            │
+│    • Generates context-aware question   │
+└──────────────┬──────────────────────────┘
+               │
+               v
+┌─────────────────────────────────────────┐
+│ 3. QUESTION PHASE                       │
+│    • Displays: "Question:"               │
+│    • Shows interviewer question         │
+│    • Prompts: "Now you answer."         │
+└──────────────┬──────────────────────────┘
+               │
+               v
+┌─────────────────────────────────────────┐
+│ 4. WAITING FOR ANSWER                   │
+│    • Accumulates candidate answer       │
+│    • Real-time transcription displayed  │
+│    • Detects 3 seconds of silence       │
+└──────────────┬──────────────────────────┘
+               │
+               v (Silence > 3s)
+┌─────────────────────────────────────────┐
+│ 5. ANSWER PROCESSED                     │
+│    • Shows complete answer              │
+│    • Scores answer (technical, clarity) │
+│    • Says: "Please proceed..."           │
+└──────────────┬──────────────────────────┘
+               │
+               v
+         (Back to Step 1)
 ```
 
 ### System Flow
@@ -65,21 +108,23 @@ This system automatically:
 2. **Perception Layer**: Processes frames with OCR and audio with STT
 3. **Content Analysis**: Extracts code snippets, keywords, and topics
 4. **Context Fusion**: Combines screen and speech content into unified context
-5. **Interview Engine**: Orchestrates question generation and answer capture
-6. **Trigger Logic**: Determines optimal timing for questions (pauses, topic changes)
-7. **Question Generation**: Creates context-aware questions using LLM
-8. **Answer Processing**: Captures and scores student responses
-9. **Evaluation**: Generates comprehensive feedback report
+5. **Turn-Based Interview**: 
+   - **LISTENING**: Accumulates candidate speech, detects silence (3s)
+   - **QUESTION**: Generates and asks context-aware question
+   - **ANSWER**: Captures and processes candidate response
+   - **PROCEED**: Prompts candidate to continue
+6. **Question Generation**: Creates context-aware questions using LLM based on accumulated speech
+7. **Answer Processing**: Captures, transcribes, and scores student responses
+8. **Evaluation**: Generates comprehensive feedback report
 
 ## Tech Stack
 
 ### Core Technologies
 
 **LLM (Large Language Model)**
-- **Primary**: Meta LLaMA-3 8B Instruct
-- **Fallback**: Mistral AI Mistral 7B Instruct
-- **Inference Runtime**: llama.cpp (local, CPU-based)
-- **Library**: llama-cpp-python
+- **Ollama** - Local LLM runtime (fast setup, no large downloads needed)
+- **Recommended Models**: llama3.2 (3B, fast), llama3.1 (8B, better quality), mistral (7B)
+- **API**: HTTP-based local API (no complex dependencies)
 
 **Speech-to-Text**
 - **OpenAI Whisper** (local, offline)
@@ -142,25 +187,47 @@ cd "AI Interviewer"
    pip install -r requirements.txt
    ```
 
-3. **Install Tesseract OCR**
+3. **Configure Environment Variables** (Optional)
+   ```bash
+   # Copy the example environment file
+   cp .env.example .env
+   
+   # Edit .env if needed (only if Ollama is on different URL or Tesseract not auto-detected)
+   ```
+   
+   **Note**: Most users don't need to edit `.env` - defaults work fine. Only edit if:
+   - Ollama is running on a different URL/port
+   - You want to use a different model name
+   - Tesseract is not auto-detected
+
+4. **Install Tesseract OCR**
    - **Windows**: Download from [UB Mannheim](https://github.com/UB-Mannheim/tesseract/wiki)
    - Install to default location: `C:\Program Files\Tesseract-OCR\`
    - The system will auto-detect it
 
-4. **Download LLM Model**
+5. **Install and Setup Ollama** (Much faster than downloading GGUF files!)
    ```bash
-   # Option 1: Use download script
-   python download_model.py
+   # Step 1: Download and install Ollama
+   # Visit: https://ollama.com/download
+   # Download and install Ollama for your OS
    
-   # Option 2: Manual download
-   # Visit: https://huggingface.co/models?search=llama-3-8b-instruct-gguf
-   # Download Q4_K_M quantized model (~4.5GB)
-   # Place in: models/llama-3-8b-instruct.gguf
+   # Step 2: Start Ollama (runs in background automatically)
+   # On Windows: Just install and it starts automatically
+   # On Linux/Mac: Run 'ollama serve' in terminal
+   
+   # Step 3: Pull a model (choose one):
+   ollama pull llama3.2      # Fast, 3B model (~2GB, recommended for quick setup)
+   # OR
+   ollama pull llama3.1      # Better quality, 8B model (~4.7GB)
+   # OR
+   ollama pull mistral       # Alternative 7B model (~4.1GB)
    ```
    
-   See `DOWNLOAD_MODEL.md` for detailed instructions.
+   **Note**: Model download happens automatically when you run `ollama pull`. 
+   First pull may take 5-15 minutes depending on your internet speed.
+   After that, models are cached locally.
 
-5. **Verify Installation**
+6. **Verify Installation**
    ```bash
    # Test OCR
    python perception/ocr.py
@@ -174,41 +241,100 @@ cd "AI Interviewer"
 
 ### Run Project
 
-**Option 1: GUI (Recommended for Demo)**
+#### Option 1: GUI (Recommended for Demo)
+
+**Start the Streamlit interface:**
 ```bash
 streamlit run app.py
 ```
-Opens web interface in browser with:
-- Start/Stop interview controls
-- Live transcript display
-- Current question display
-- Real-time scores
-- Final feedback report
 
-**Option 2: Command Line**
+**What happens:**
+- Opens web interface in your browser (usually `http://localhost:8501`)
+- Shows welcome screen with instructions
+
+**Using the GUI:**
+1. Click **"🚀 Start Interview"** button in the sidebar
+2. Begin presenting your project (screen share + speak)
+3. Watch live updates:
+   - **Live Transcript**: Your speech appears in real-time
+   - **Current Question**: Questions appear automatically
+   - **Answers & Scores**: Your answers are scored as you respond
+4. Click **"⏹️ Stop Interview"** when done
+5. View final report with scores and feedback
+6. Download report if needed
+
+**Features:**
+- Real-time transcript display
+- Current question display
+- Live score updates
+- Final feedback report with charts
+- Downloadable report
+
+---
+
+#### Option 2: Command Line Interface
+
+**Start the CLI:**
 ```bash
 python main.py
 ```
 
 **What happens:**
 1. System validates environment and dependencies
-2. Starts screen and audio capture
-3. Begins processing presentation content
-4. Asks questions automatically based on triggers
-5. Captures and scores answers
-6. Generates final feedback report on exit (Ctrl+C)
+2. Shows startup banner and status
+3. Starts screen and audio capture
+4. Begins processing presentation content
+5. Asks questions automatically based on triggers
+6. Captures and scores answers
+7. Generates final feedback report on exit
 
 **During Interview:**
 - Start presenting your project (screen share + speak)
 - System will automatically ask questions
-- Answer questions when asked
-- Click "Stop Interview" (GUI) or Press `Ctrl+C` (CLI) to end session
+- Answer questions when asked (speak clearly)
+- Press `Ctrl+C` to end session and view report
 
 **Output:**
 - Real-time logs in console
 - Detailed log file: `logs/interviewer.log`
 - Session data: `logs/session.json`
-- Final feedback report (displayed in GUI or printed in CLI)
+- Final feedback report printed at end
+
+---
+
+### Execution Flow
+
+**Typical Interview Session:**
+
+1. **Startup** (5-10 seconds)
+   - Environment validation
+   - Component initialization
+   - Capture devices ready
+
+2. **Presentation Phase** (ongoing)
+   - Screen capture running (2 FPS)
+   - Audio capture running (16kHz)
+   - OCR processing every 3 seconds
+   - STT processing every 5 seconds
+   - Context fusion and analysis
+
+3. **Question Phase** (automatic)
+   - First question after ~10 seconds
+   - Questions every 30+ seconds
+   - Follow-up questions based on answers
+   - Maximum 10 questions per session
+
+4. **Answer Phase** (automatic)
+   - Speech captured after question
+   - Answer detected after 3 seconds of silence
+   - Automatic scoring (technical depth, clarity, etc.)
+   - Scores displayed in real-time
+
+5. **Completion**
+   - Press `Ctrl+C` (CLI) or click "Stop" (GUI)
+   - Final report generated
+   - Scores and feedback displayed
+   - Session data saved to `logs/session.json`
 
 ## Project Structure
 
@@ -240,7 +366,7 @@ AI Interviewer/
 │   ├── prompts.py
 │   └── logging_config.py
 ├── logs/             # Session logs
-├── models/           # LLM models (place GGUF files here)
+├── models/           # (Not used with Ollama - models managed by Ollama)
 ├── main.py           # Entry point (CLI)
 ├── app.py            # Streamlit GUI entry point
 └── requirements.txt  # Python dependencies
@@ -250,7 +376,8 @@ AI Interviewer/
 
 - **Python**: 3.11+
 - **Tesseract OCR**: Installed and in PATH
-- **LLM Model**: LLaMA-3 8B Instruct GGUF (~4.5GB)
+- **Ollama**: Installed and running (download from https://ollama.com/download)
+- **LLM Model**: Any Ollama model (llama3.2 recommended, ~2GB)
 - **Hardware**: 
   - Microphone access
   - Screen capture permissions
@@ -259,10 +386,40 @@ AI Interviewer/
 
 ## Troubleshooting
 
-- **Tesseract not found**: See installation instructions in error message
-- **LLM model not found**: Download model to `models/` directory (see `DOWNLOAD_MODEL.md`)
-- **Audio capture fails**: Check microphone permissions and device selection
-- **Performance issues**: Reduce OCR/STT processing frequency in `config/settings.py`
+### Common Issues
+
+**Tesseract not found**
+- Windows: Install from [UB Mannheim](https://github.com/UB-Mannheim/tesseract/wiki)
+- Set `TESSERACT_PATH` in `.env` if not auto-detected
+
+**Ollama not running**
+- Install from: https://ollama.com/download
+- Ensure Ollama service is running
+- Check: `ollama list` should show your models
+
+**Model not found**
+- Run: `ollama pull llama3.2` (or your chosen model)
+- Verify: `ollama list` shows the model
+
+**Audio capture fails**
+- Check microphone permissions in Windows settings
+- Verify microphone is not muted
+- Set `AUDIO_DEVICE_INDEX` in `.env` if using specific device
+
+**Streamlit not opening**
+- Ensure Streamlit is installed: `pip install streamlit`
+- Check if port 8501 is available
+- Try: `streamlit run app.py --server.port 8502`
+
+**Performance issues**
+- Reduce `OCR_PROCESS_INTERVAL` in `.env` (default: 3.0)
+- Reduce `STT_CHUNK_DURATION` in `.env` (default: 5.0)
+- Use smaller Whisper model: `WHISPER_MODEL=tiny` in `.env`
+
+**No questions being asked**
+- Wait at least 10 seconds (initial delay)
+- Ensure you're speaking and showing content on screen
+- Check logs: `logs/interviewer.log`
 
 ## License
 

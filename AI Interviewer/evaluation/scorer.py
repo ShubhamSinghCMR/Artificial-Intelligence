@@ -64,7 +64,7 @@ def score_answer(question, answer, context=None, use_llm=True):
                 scores['overall'] = calculate_overall_score(scores)
                 return scores
         except Exception as e:
-        logger.warning(f"LLM analysis failed, using heuristics: {e}")
+            logger.warning(f"LLM analysis failed, using heuristics: {e}")
     
     # Fallback to heuristic scoring
     return score_answer_heuristic(question, answer, context)

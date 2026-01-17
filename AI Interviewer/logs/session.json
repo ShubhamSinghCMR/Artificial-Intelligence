@@ -1,0 +1,120 @@
+{
+  "session_start": 1768647168.6717603,
+  "session_end": 1768647195.4248228,
+  "duration_seconds": 26.75306248664856,
+  "stats": {
+    "is_active": false,
+    "duration_seconds": 26.75306248664856,
+    "duration_minutes": 0.445884374777476,
+    "question_count": 1,
+    "answer_count": 1,
+    "topics_discussed": 2,
+    "keywords_mentioned": 4,
+    "code_snippets_seen": 2,
+    "context_entries": 10
+  },
+  "questions": [
+    {
+      "question": "How does the Al Interviewer system handle situations where an agent's output changes after it has been logged to the file, and what measures are taken to prevent or mitigate potential data inconsistencies?",
+      "timestamp": 1768647181.9320652,
+      "question_id": 0,
+      "metadata": {
+        "question_id": 0,
+        "is_initial": true
+      }
+    }
+  ],
+  "answers": [
+    {
+      "answer": "in which I will walk you through the project architecture we have",
+      "timestamp": 1768647185.5155635,
+      "answer_id": 0,
+      "question_id": 0,
+      "metadata": {
+        "question_id": 0,
+        "scores": {
+          "technical_depth": 5.5,
+          "clarity": 5.0,
+          "originality": 5.0,
+          "understanding": 5.0,
+          "method": "heuristic",
+          "overall": 5.2
+        }
+      }
+    }
+  ],
+  "topics_discussed": [
+    "ok so this is the read we file of the project",
+    "in which I will walk you through the project architecture we have"
+  ],
+  "keywords_mentioned": [
+    "application",
+    "system",
+    "architecture",
+    "view"
+  ],
+  "final_scores": {
+    "overall": 5.2,
+    "technical_depth": 5.5,
+    "clarity": 5.0,
+    "originality": 5.0,
+    "understanding": 5.0,
+    "passing": false
+  },
+  "feedback": {
+    "overall_score": 5.2,
+    "passing": false,
+    "summary": "Needs improvement. While you showed some understanding, significant work is needed in multiple areas to meet the expected standards.",
+    "strengths": [
+      "Keep practicing and building your skills"
+    ],
+    "weaknesses": [
+      "Technical depth needs improvement - focus on explaining implementation details, algorithms, and technical decisions",
+      "Clarity needs work - practice structuring your answers and explaining concepts more clearly",
+      "Originality could be enhanced - try to provide specific examples and personal insights rather than generic responses",
+      "Understanding needs development - ensure your answers directly address the questions and demonstrate comprehension"
+    ],
+    "recommendations": [
+      "Study technical concepts more deeply - learn about algorithms, data structures, design patterns, and system architecture",
+      "Practice explaining your code and technical decisions in detail",
+      "Practice structuring your answers - use frameworks like 'First, I... Then, I... Finally, I...'",
+      "Work on being concise yet complete - aim for 30-100 words per answer",
+      "Include specific examples from your projects - mention actual code, features, or challenges you faced",
+      "Share personal experiences and lessons learned",
+      "Listen carefully to questions and ensure your answers directly address what was asked",
+      "Ask for clarification if you don't understand a question",
+      "Practice explaining concepts in your own words"
+    ],
+    "detailed_scores": {
+      "technical_depth": {
+        "score": 5.5,
+        "feedback": "Limited technical depth - needs more focus on technical details"
+      },
+      "clarity": {
+        "score": 5.0,
+        "feedback": "Limited clarity - explanations need better structure"
+      },
+      "originality": {
+        "score": 5.0,
+        "feedback": "Limited originality - answers were somewhat generic"
+      },
+      "understanding": {
+        "score": 5.0,
+        "feedback": "Limited understanding - needs to develop better comprehension"
+      }
+    },
+    "session_info": {
+      "questions_asked": 1,
+      "answers_received": 1,
+      "topics_discussed": 2,
+      "duration_minutes": 0.445884374777476
+    },
+    "qa_pairs": [
+      {
+        "question": "How does the Al Interviewer system handle situations where an agent's output changes after it has been logged to the file, and what measures are taken to prevent or mitigate potential data inconsistencies?",
+        "answer": "in which I will walk you through the project architecture we have",
+        "timestamp": 1768647185.5155635
+      }
+    ]
+  }
+}

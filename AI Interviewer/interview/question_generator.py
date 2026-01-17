@@ -80,14 +80,22 @@ class QuestionGenerator:
         Generate a question based on current context.
         
         Args:
-            context: Optional context string
+            context: Optional context string or dict with 'formatted_context' key
             trigger_type: Type of trigger ('pause', 'topic_change', 'time_based')
         
         Returns:
             dict with question info
         """
+        # Handle dict context (from new turn-based flow)
+        if isinstance(context, dict):
+            context = context.get('formatted_context', '')
+        
         if context is None:
             context = get_context_for_llm(self.state, seconds=60)
+        
+        # Ensure context is a string
+        if not isinstance(context, str):
+            context = str(context) if context else ''
         
         if not context or len(context.strip()) < 50:
             return None

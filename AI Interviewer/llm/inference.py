@@ -1,19 +1,23 @@
 """
 LLM inference module for generating questions and analyzing answers.
-Uses llama-cpp-python for local inference with graceful fallback.
+Uses Ollama API for local inference with graceful fallback.
 """
 
 import sys
 import os
 from pathlib import Path
 import time
+import requests
+import json
 
 # Add project root to path for imports
 project_root = Path(__file__).parent.parent
 sys.path.insert(0, str(project_root))
 
-from llm.loader import get_llm_model
+from llm.loader import get_llm_model, check_ollama_available
 from config.settings import (
+    OLLAMA_MODEL_NAME,
+    OLLAMA_BASE_URL,
     LLM_TEMPERATURE,
     LLM_MAX_TOKENS,
     LLM_TOP_P,
@@ -26,23 +30,71 @@ from config.prompts import (
 )
 
 
+def _call_ollama(prompt, model_name=None, temperature=None, max_tokens=None):
+    """
+    Call Ollama API for text generation.
+    
+    Args:
+        prompt: Input prompt
+        model_name: Model name (uses OLLAMA_MODEL_NAME if None)
+        temperature: Temperature (uses LLM_TEMPERATURE if None)
+        max_tokens: Max tokens (uses LLM_MAX_TOKENS if None)
+    
+    Returns:
+        Generated text or None if error
+    """
+    if model_name is None:
+        model_name = OLLAMA_MODEL_NAME
+    if temperature is None:
+        temperature = LLM_TEMPERATURE
+    if max_tokens is None:
+        max_tokens = LLM_MAX_TOKENS
+    
+    try:
+        response = requests.post(
+            f"{OLLAMA_BASE_URL}/api/generate",
+            json={
+                "model": model_name,
+                "prompt": prompt,
+                "stream": False,
+                "options": {
+                    "temperature": temperature,
+                    "top_p": LLM_TOP_P,
+                    "top_k": LLM_TOP_K,
+                    "num_predict": max_tokens
+                }
+            },
+            timeout=30
+        )
+        
+        if response.status_code == 200:
+            result = response.json()
+            return result.get('response', '').strip()
+        else:
+            print(f"Ollama API error: {response.status_code} - {response.text}")
+            return None
+    
+    except requests.exceptions.Timeout:
+        print("Ollama API timeout - request took too long")
+        return None
+    except Exception as e:
+        print(f"Ollama API error: {e}")
+        return None
+
+
 def generate_question(context, model=None, prompt_template=None):
     """
     Generate a question based on presentation context.
     
     Args:
         context: Context string (from context fusion)
-        model: LLM model (loads if None)
+        model: Model dict (not used with Ollama, kept for compatibility)
         prompt_template: Prompt template string (uses default if None)
     
     Returns:
         dict with keys: 'question', 'success', 'error'
     """
-    if model is None:
-        model = get_llm_model()
-    
-    if model is None:
-        # Fallback to template-based question generation
+    if not check_ollama_available():
         return _generate_question_fallback(context)
     
     # Get prompt template
@@ -56,19 +108,14 @@ def generate_question(context, model=None, prompt_template=None):
         # Format prompt
         prompt = prompt_template.format(context=context[:2000])  # Limit context length
         
-        # Generate response
-        response = model(
-            prompt,
-            max_tokens=LLM_MAX_TOKENS,
-            temperature=LLM_TEMPERATURE,
-            top_p=LLM_TOP_P,
-            top_k=LLM_TOP_K,
-            stop=["\n\n", "Context:", "Question:", "Answer:"],
-            echo=False
-        )
+        # Call Ollama
+        generated_text = _call_ollama(prompt, max_tokens=LLM_MAX_TOKENS, temperature=LLM_TEMPERATURE)
+        
+        if generated_text is None:
+            return _generate_question_fallback(context)
         
         # Extract question
-        question = response['choices'][0]['text'].strip()
+        question = generated_text.strip()
         
         # Clean up question
         question = _clean_question(question)
@@ -92,15 +139,12 @@ def generate_followup_question(previous_question, answer, context, model=None):
         previous_question: Previous question string
         answer: Student's answer string
         context: Current context
-        model: LLM model (loads if None)
+        model: Model dict (not used with Ollama, kept for compatibility)
     
     Returns:
         dict with keys: 'question', 'success', 'error'
     """
-    if model is None:
-        model = get_llm_model()
-    
-    if model is None:
+    if not check_ollama_available():
         return _generate_followup_fallback(previous_question, answer, context)
     
     # Get follow-up prompt
@@ -114,17 +158,12 @@ def generate_followup_question(previous_question, answer, context, model=None):
     try:
         prompt = prompt_template
         
-        response = model(
-            prompt,
-            max_tokens=LLM_MAX_TOKENS,
-            temperature=LLM_TEMPERATURE,
-            top_p=LLM_TOP_P,
-            top_k=LLM_TOP_K,
-            stop=["\n\n", "Context:", "Question:", "Answer:"],
-            echo=False
-        )
+        generated_text = _call_ollama(prompt, max_tokens=LLM_MAX_TOKENS, temperature=LLM_TEMPERATURE)
         
-        question = response['choices'][0]['text'].strip()
+        if generated_text is None:
+            return _generate_followup_fallback(previous_question, answer, context)
+        
+        question = generated_text.strip()
         question = _clean_question(question)
         
         return {
@@ -146,15 +185,12 @@ def analyze_answer(question, answer, context, model=None):
         question: Question that was asked
         answer: Student's answer
         context: Presentation context
-        model: LLM model (loads if None)
+        model: Model dict (not used with Ollama, kept for compatibility)
     
     Returns:
         dict with analysis: 'quality', 'technical_depth', 'clarity', 'understanding', 'feedback'
     """
-    if model is None:
-        model = get_llm_model()
-    
-    if model is None:
+    if not check_ollama_available():
         return _analyze_answer_fallback(question, answer, context)
     
     # Get analysis prompt
@@ -168,17 +204,16 @@ def analyze_answer(question, answer, context, model=None):
     try:
         prompt = prompt_template
         
-        response = model(
-            prompt,
+        generated_text = _call_ollama(
+            prompt, 
             max_tokens=300,  # Longer for analysis
-            temperature=0.5,  # Lower temperature for more consistent analysis
-            top_p=LLM_TOP_P,
-            top_k=LLM_TOP_K,
-            stop=["\n\n\n"],
-            echo=False
+            temperature=0.5  # Lower temperature for more consistent analysis
         )
         
-        analysis_text = response['choices'][0]['text'].strip()
+        if generated_text is None:
+            return _analyze_answer_fallback(question, answer, context)
+        
+        analysis_text = generated_text.strip()
         
         # Parse analysis (simple extraction)
         analysis = _parse_analysis(analysis_text)
@@ -355,7 +390,7 @@ def _extract_keywords_from_context(context):
 # Test function
 def test_inference():
     """Test LLM inference functionality."""
-    print("Testing LLM inference...")
+    print("Testing Ollama LLM inference...")
     
     # Test context
     context = """

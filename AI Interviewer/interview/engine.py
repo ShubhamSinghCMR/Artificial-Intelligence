@@ -16,7 +16,8 @@ sys.path.insert(0, str(project_root))
 
 from context.state import create_state, add_context_entry, end_session, get_session_stats
 from context.fusion import fuse_ocr_and_transcript, get_context_for_llm
-from capture.screen_capture import capture_frame, FrameChangeDetector
+from capture.screen_capture import capture_frame
+from capture.change_detector import FrameChangeDetector
 from capture.audio_capture import create_audio_stream, capture_audio_chunk, audio_chunk_generator
 from perception.ocr import extract_text
 from perception.stt import transcribe_audio
@@ -36,7 +37,17 @@ logger = get_logger('interview.engine')
 class InterviewEngine:
     """
     Main interview engine that orchestrates all components.
+    Implements turn-based interview flow:
+    1. LISTENING: User describes project, system listens and stores
+    2. WAITING_FOR_ANSWER: Question asked, waiting for user to answer
+    3. PROCEEDING: Answer received, saying "proceed"
     """
+    
+    # Interview states
+    STATE_LISTENING = "listening"  # User is describing, system listening
+    STATE_WAITING_FOR_ANSWER = "waiting_for_answer"  # Question asked, waiting for answer
+    STATE_PROCEEDING = "proceeding"  # Answer received, saying proceed
+    STATE_ENDED = "ended"  # Interview ended
     
     def __init__(self, state=None):
         """
@@ -66,82 +77,66 @@ class InterviewEngine:
         self.last_ocr_time = 0
         self.last_stt_time = 0
         
-        # Answer capture
-        self.waiting_for_answer = False
+        # Turn-based interview state
+        self.interview_state = self.STATE_LISTENING
         self.current_question_id = None
+        
+        # Speech accumulation
+        self.speech_buffer = []  # Accumulate speech while listening
         self.answer_buffer = []  # Accumulate speech for answer
-        self.answer_start_time = None
-        self.answer_timeout = 60.0  # Max time to wait for answer
+        self.last_speech_time = None  # Track when user last spoke
+        self.silence_start_time = None  # Track when silence started
+        self.question_asked_flag = False  # Prevent asking multiple questions
+        self.consecutive_empty_chunks = 0  # Track consecutive empty STT chunks
+        
+        # Settings
+        self.silence_duration_for_question = 10.0  # Seconds of silence before asking question
+        self.silence_duration_for_answer = 10.0  # Seconds of silence before considering answer complete
+        self.min_speech_length = 10  # Minimum characters before asking question
     
     def start(self):
         """Start the interview session."""
-        logger.info("="*60)
-        logger.info("Starting AI Interviewer")
-        logger.info("="*60)
-        
         # Initialize audio capture
-        logger.info("Initializing audio capture...")
         self.audio_p, self.audio_stream = create_audio_stream()
         if self.audio_stream is None:
             logger.error("Failed to initialize audio capture")
             return False
         
-        logger.info("Audio capture initialized")
-        
         # Start capture thread
         self.is_running = True
         self.capture_thread = threading.Thread(target=self._capture_loop, daemon=True)
         self.capture_thread.start()
-        logger.debug("Capture thread started")
         
         # Start processing thread
         self.processing_thread = threading.Thread(target=self._processing_loop, daemon=True)
         self.processing_thread.start()
-        logger.debug("Processing thread started")
         
-        logger.info("Interview engine started")
-        logger.info("Press Ctrl+C to stop")
+        print("\n" + "="*60)
+        print("DEMONSTRATION")
+        print("="*60 + "\n")
+        print("[INTERVIEWER]: Please begin speaking. Describe your project.\n")
         
         return True
     
     def stop(self):
         """Stop the interview session."""
-        logger.info("="*60)
-        logger.info("Stopping AI Interviewer")
-        logger.info("="*60)
-        
         self.is_running = False
-        logger.debug("Set is_running = False")
         
         # Stop audio
         if self.audio_stream:
             self.audio_stream.stop_stream()
             self.audio_stream.close()
-            logger.debug("Audio stream closed")
         if self.audio_p:
             self.audio_p.terminate()
-            logger.debug("PyAudio terminated")
         
         # Wait for threads
         if self.capture_thread:
             self.capture_thread.join(timeout=2.0)
-            logger.debug("Capture thread joined")
         if self.processing_thread:
             self.processing_thread.join(timeout=2.0)
-            logger.debug("Processing thread joined")
         
         # End session
         end_session(self.state)
-        
-        # Print stats
-        stats = get_session_stats(self.state)
-        logger.info("Session Statistics:")
-        logger.info(f"  Duration: {stats['duration_minutes']:.1f} minutes")
-        logger.info(f"  Questions asked: {stats['question_count']}")
-        logger.info(f"  Answers received: {stats['answer_count']}")
-        logger.info(f"  Topics discussed: {stats['topics_discussed']}")
-        
-        logger.info("Interview session ended")
     
     def _capture_loop(self):
         """Main capture loop (runs in separate thread)."""
@@ -169,7 +164,7 @@ class InterviewEngine:
     
     def _processing_loop(self):
         """Main processing loop (runs in separate thread)."""
-        while self.is_running:
+        while self.is_running and self.interview_state != self.STATE_ENDED:
             try:
                 current_time = time.time()
                 
@@ -191,12 +186,13 @@ class InterviewEngine:
                         self._process_audio(audio_data, audio_time)
                         self.last_stt_time = current_time
                 
-                # Check for answers if waiting
-                if self.waiting_for_answer:
-                    self._check_for_answer(current_time)
-                
-                # Check for questions
-                self._check_and_ask_questions()
+                # State machine logic
+                if self.interview_state == self.STATE_LISTENING:
+                    self._handle_listening_state(current_time)
+                elif self.interview_state == self.STATE_WAITING_FOR_ANSWER:
+                    self._handle_waiting_for_answer_state(current_time)
+                elif self.interview_state == self.STATE_PROCEEDING:
+                    self._handle_proceeding_state()
                 
                 # Small sleep
                 time.sleep(0.5)
@@ -208,12 +204,19 @@ class InterviewEngine:
     def _process_frame(self, frame, timestamp):
         """Process a screen frame with OCR."""
         try:
-            # Extract text
+            # Extract text from screen
             ocr_result = extract_text(frame, preprocess=True)
             
             if ocr_result and ocr_result.get('text'):
                 # Parse content
                 ocr_content = parse_ocr_content(ocr_result)
+                
+                # Store latest screen content in state for question generation
+                self.state['latest_screen_content'] = {
+                    'text': ocr_result.get('text', ''),
+                    'confidence': ocr_result.get('confidence', 0),
+                    'timestamp': timestamp
+                }
                 
                 # Fuse with transcript if available
                 latest_transcript = self.state.get('latest_transcript')
@@ -246,131 +249,192 @@ class InterviewEngine:
                 # Log transcript
                 text = transcript_result.get('text', '').strip()
                 if text:
-                    logger.info(f"[STUDENT]: {text}")
+                    # Print candidate transcription
+                    print(f"[CANDIDATE]: {text}")
                     
-                    # If waiting for answer, accumulate it
-                    if self.waiting_for_answer:
+                    # Check for "thank you" to end interview
+                    text_lower = text.lower()
+                    if any(phrase in text_lower for phrase in ['thank you', 'thanks', 'thankyou', 'thank u']):
+                        print("\n[INTERVIEWER]: Thank you! The interview is now complete.\n")
+                        self.interview_state = self.STATE_ENDED
+                        self.is_running = False
+                        return
+                    
+                    # Update last speech time (use current processing time, not audio timestamp)
+                    self.last_speech_time = time.time()  # Use current time, not audio timestamp
+                    self.silence_start_time = None
+                    self.question_asked_flag = False  # Reset flag when new speech detected
+                    self.consecutive_empty_chunks = 0  # Reset empty chunk counter
+                    
+                    # Accumulate speech based on state
+                    if self.interview_state == self.STATE_LISTENING:
+                        self.speech_buffer.append(text)
+                    elif self.interview_state == self.STATE_WAITING_FOR_ANSWER:
                         self.answer_buffer.append(text)
-                        logger.debug(f"Answer buffer updated: {len(self.answer_buffer)} chunks")
+                else:
+                    # No speech in this chunk - increment counter
+                    self.consecutive_empty_chunks += 1
+                    
+                    # If we've had multiple empty chunks, update silence start time
+                    if self.consecutive_empty_chunks >= 2:  # 2 chunks = ~6 seconds of no speech
+                        if self.silence_start_time is None and self.last_speech_time is not None:
+                            self.silence_start_time = time.time()
         
         except Exception as e:
             logger.error(f"Error processing audio: {e}", exc_info=True)
     
-    def _check_and_ask_questions(self):
-        """Check triggers and ask questions if appropriate."""
+    def _handle_listening_state(self, current_time):
+        """Handle LISTENING state: accumulate speech, detect silence, ask question."""
         try:
-            current_time = time.time()
-            
-            # Get recent context
-            from context.state import get_recent_context
-            recent_context = get_recent_context(self.state, seconds=60)
-            
-            # Check for initial question
-            if self.state.get('question_count', 0) == 0:
-                if should_ask_initial_question(self.state, current_time):
-                    self._ask_initial_question()
-                return
-            
-            # Check for regular question
-            trigger = should_ask_question(self.state, current_time, recent_context)
-            if trigger['should_ask']:
-                self._ask_question(trigger['trigger_type'])
-            
-            # Check for follow-up
-            followup = should_ask_followup(self.state)
-            if followup['should_ask']:
-                self._ask_followup_question(followup['question_id'])
+            # Only check for silence if we have received speech and haven't asked question yet
+            if self.last_speech_time is not None and not self.question_asked_flag:
+                # Use silence_start_time if we've detected empty chunks, otherwise use last_speech_time
+                if self.silence_start_time is not None:
+                    # We've had consecutive empty chunks, use silence start time
+                    time_since_silence = current_time - self.silence_start_time
+                    time_since_speech = time_since_silence
+                else:
+                    # Calculate time since last speech was received
+                    time_since_speech = current_time - self.last_speech_time
+                
+                # Wait for full silence duration (10 seconds)
+                if time_since_speech >= self.silence_duration_for_question:
+                    # Check if we have enough speech to ask a question
+                    accumulated_text = " ".join(self.speech_buffer).strip()
+                    
+                    if len(accumulated_text) >= self.min_speech_length:
+                        # Set flag to prevent asking multiple questions
+                        self.question_asked_flag = True
+                        
+                        # Print candidate transcription
+                        print(f"\n[CANDIDATE TRANSCRIPTION]: {accumulated_text}\n")
+                        print("Candidate stopped.\n")
+                        
+                        # Ask question based on accumulated speech and screen content
+                        self._ask_question_from_speech(accumulated_text)
+                        
+                        # Clear speech buffer
+                        self.speech_buffer = []
+                        self.last_speech_time = None
+                        self.silence_start_time = None
+                        self.consecutive_empty_chunks = 0
+                        
+                        # Switch to waiting for answer
+                        self.interview_state = self.STATE_WAITING_FOR_ANSWER
+                        self.answer_buffer = []
+            elif self.last_speech_time is None:
+                # No speech yet, initialize silence tracking
+                if self.silence_start_time is None:
+                    self.silence_start_time = current_time
         
         except Exception as e:
-            logger.error(f"Error checking questions: {e}", exc_info=True)
+            logger.error(f"Error in listening state: {e}", exc_info=True)
     
-    def _ask_initial_question(self):
-        """Ask the initial question."""
+    def _handle_waiting_for_answer_state(self, current_time):
+        """Handle WAITING_FOR_ANSWER state: wait for answer, detect completion."""
         try:
-            context = get_context_for_llm(self.state, seconds=60)
-            question_info = self.question_generator.generate_initial_question(context)
-            
-            if question_info and question_info.get('question'):
-                question = question_info['question']
-                logger.info("="*60)
-                logger.info(f"[INTERVIEWER]: {question}")
-                logger.info("="*60)
+            # Check if user has stopped speaking (answer complete)
+            if self.last_speech_time is not None:
+                # Calculate time since last speech
+                time_since_speech = current_time - self.last_speech_time
                 
-                # Add to state
-                question_id = self.state.get('question_count', 0)
-                add_context_entry(self.state, 'question', question, {
-                    'question_id': question_id,
-                    'is_initial': True
-                })
-                
-                # Start waiting for answer
-                self.waiting_for_answer = True
-                self.current_question_id = question_id
-                self.answer_start_time = time.time()
-                self.answer_buffer = []
+                # If silence detected for long enough (10 seconds), answer is complete
+                if time_since_speech >= self.silence_duration_for_answer:
+                    # Process the answer
+                    answer_text = " ".join(self.answer_buffer).strip()
+                    
+                    if len(answer_text) >= 5:  # Minimum answer length
+                        print(f"\n[CANDIDATE ANSWER]: {answer_text}\n")
+                        print("Candidate stopped.\n")
+                        
+                        self._process_answer(answer_text)
+                        
+                        # Clear answer buffer
+                        self.answer_buffer = []
+                        self.last_speech_time = None
+                        
+                        # Switch to proceeding state
+                        self.interview_state = self.STATE_PROCEEDING
         
         except Exception as e:
-            logger.error(f"Error asking initial question: {e}", exc_info=True)
+            logger.error(f"Error in waiting for answer state: {e}", exc_info=True)
     
-    def _ask_question(self, trigger_type=None):
-        """Ask a question based on trigger."""
+    def _handle_proceeding_state(self):
+        """Handle PROCEEDING state: say 'proceed' and return to listening."""
         try:
-            context = get_context_for_llm(self.state, seconds=60)
+            print("[INTERVIEWER]: Please proceed with your presentation.\n")
+            
+            # Switch back to listening
+            self.interview_state = self.STATE_LISTENING
+            self.speech_buffer = []
+            self.last_speech_time = None
+            self.silence_start_time = None
+            self.question_asked_flag = False  # Reset flag for next question
+            self.consecutive_empty_chunks = 0  # Reset empty chunk counter
+        
+        except Exception as e:
+            logger.error(f"Error in proceeding state: {e}", exc_info=True)
+    
+    def _ask_question_from_speech(self, speech_text):
+        """Ask a question based on the accumulated speech and screen content."""
+        try:
+            # Get context including both speech and screen content (returns a string)
+            context_str = get_context_for_llm(self.state, seconds=60)
+            
+            # Get latest screen content (OCR)
+            latest_ocr = self.state.get('latest_screen_content', {})
+            screen_text = ""
+            if latest_ocr and isinstance(latest_ocr, dict):
+                screen_text = latest_ocr.get('text', '')
+            
+            # Build comprehensive context with both speech and screen
+            context_text = f"Student has described: {speech_text}\n\n"
+            if screen_text:
+                context_text += f"Screen content visible: {screen_text}\n\n"
+            if context_str:
+                context_text += context_str
+            
+            # Generate question (pass context as string)
             question_info = self.question_generator.generate_question_from_context(
-                context=context,
-                trigger_type=trigger_type
+                context=context_text,
+                trigger_type='speech_complete'
             )
             
             if question_info and question_info.get('question'):
                 question = question_info['question']
-                logger.info("="*60)
-                logger.info(f"[INTERVIEWER]: {question}")
-                logger.info(f"  (Trigger: {trigger_type or 'time-based'})")
-                logger.info("="*60)
-                
-                # Add to state
-                question_id = self.state.get('question_count', 0)
-                add_context_entry(self.state, 'question', question, {
-                    'question_id': question_id,
-                    'trigger_type': trigger_type
-                })
-                
-                # Start waiting for answer
-                self.waiting_for_answer = True
-                self.current_question_id = question_id
-                self.answer_start_time = time.time()
-                self.answer_buffer = []
+            else:
+                # Fallback question
+                question = "Can you tell me more about that?"
+            
+            # Print question
+            print("Question:")
+            print(f"[INTERVIEWER]: {question}\n")
+            print("Now you answer.\n")
+            
+            # Add to state
+            question_id = self.state.get('question_count', 0)
+            add_context_entry(self.state, 'question', question, {
+                'question_id': question_id,
+                'trigger_type': 'speech_complete'
+            })
+            
+            self.current_question_id = question_id
         
         except Exception as e:
-            logger.error(f"Error asking question: {e}", exc_info=True)
+            logger.error(f"Error asking question from speech: {e}", exc_info=True)
+    
+    # Old methods kept for compatibility but not used in new turn-based flow
+    def _ask_initial_question(self):
+        """Ask the initial question (not used in turn-based flow)."""
+        pass
+    
+    def _ask_question(self, trigger_type=None):
+        """Ask a question based on trigger (not used in turn-based flow)."""
+        pass
     
     def _ask_followup_question(self, question_id):
-        """Ask a follow-up question."""
-        try:
-            question_info = self.question_generator.generate_followup_question(question_id)
-            
-            if question_info and question_info.get('question'):
-                question = question_info['question']
-                logger.info("="*60)
-                logger.info(f"[INTERVIEWER] (Follow-up): {question}")
-                logger.info("="*60)
-                
-                # Add to state
-                new_question_id = self.state.get('question_count', 0)
-                add_context_entry(self.state, 'question', question, {
-                    'question_id': new_question_id,
-                    'parent_question_id': question_id,
-                    'is_followup': True
-                })
-                
-                # Start waiting for answer
-                self.waiting_for_answer = True
-                self.current_question_id = new_question_id
-                self.answer_start_time = time.time()
-                self.answer_buffer = []
-        
-        except Exception as e:
-            logger.error(f"Error asking follow-up: {e}", exc_info=True)
+        """Ask a follow-up question (not used in turn-based flow)."""
+        pass
     
     def _check_for_answer(self, current_time):
         """Check if answer has been received."""
@@ -406,8 +470,6 @@ class InterviewEngine:
             from evaluation.scorer import score_answer
             from context.fusion import get_context_for_llm
             
-            logger.info(f"Answer received: {answer_text[:100]}...")
-            
             # Get context for scoring
             context = get_context_for_llm(self.state, seconds=60)
             
@@ -428,16 +490,14 @@ class InterviewEngine:
                     'question_id': self.current_question_id,
                     'scores': scores
                 })
-                
-                logger.info(f"Answer scored - Overall: {scores['overall']:.1f}/10.0")
-                logger.info(f"  Technical Depth: {scores['technical_depth']:.1f}")
-                logger.info(f"  Clarity: {scores['clarity']:.1f}")
-                logger.info(f"  Understanding: {scores['understanding']:.1f}")
             else:
                 # Add answer without scoring if question not found
                 add_context_entry(self.state, 'answer', answer_text, {
                     'question_id': self.current_question_id
                 })
+            
+            # Switch to proceeding state to say "proceed"
+            self.interview_state = self.STATE_PROCEEDING
         
         except Exception as e:
             logger.error(f"Error processing answer: {e}", exc_info=True)

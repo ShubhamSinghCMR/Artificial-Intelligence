@@ -48,12 +48,29 @@ def load_whisper_model(model_name=None, device=None):
         return _whisper_model
     
     try:
-        print(f"Loading Whisper model: {model_name} (device: {device})...")
-        _whisper_model = whisper.load_model(model_name, device=device)
-        print(f"Whisper model loaded successfully!")
+        # Suppress Whisper loading messages and warnings
+        import warnings
+        import os
+        import sys
+        from io import StringIO
+        
+        # Suppress stdout during model loading
+        old_stdout = sys.stdout
+        sys.stdout = StringIO()
+        
+        try:
+            with warnings.catch_warnings():
+                warnings.simplefilter("ignore")
+                _whisper_model = whisper.load_model(model_name, device=device)
+        finally:
+            # Restore stdout
+            sys.stdout = old_stdout
+        
         return _whisper_model
     except Exception as e:
-        print(f"Error loading Whisper model: {e}")
+        # Restore stdout if error
+        if 'old_stdout' in locals():
+            sys.stdout = old_stdout
         return None
 
 
@@ -117,19 +134,37 @@ def transcribe_audio(audio_data, model=None, sample_rate=None, language=None):
         if max_level < 0.1:  # Audio is too quiet
             audio_data = audio_data * (0.5 / max_level) if max_level > 0 else audio_data
         
-        # Transcribe with better settings
-        result = model.transcribe(
-            audio_data,
-            language=language,
-            task="transcribe",
-            fp16=False,  # Always use FP32 on CPU
-            verbose=False,  # Suppress verbose output
-            condition_on_previous_text=True,  # Better context
-            initial_prompt=None,  # Can add prompt for better accuracy
-            temperature=0.0,  # More deterministic
-            best_of=1,  # Faster
-            beam_size=5  # Better accuracy
-        )
+        # Transcribe with better settings (suppress all output)
+        import warnings
+        import os
+        import sys
+        from io import StringIO
+        
+        # Suppress stdout/stderr during transcription to hide Whisper progress bars
+        old_stdout = sys.stdout
+        old_stderr = sys.stderr
+        sys.stdout = StringIO()
+        sys.stderr = StringIO()
+        
+        try:
+            with warnings.catch_warnings():
+                warnings.simplefilter("ignore")
+                result = model.transcribe(
+                    audio_data,
+                    language=language,
+                    task="transcribe",
+                    fp16=False,  # Always use FP32 on CPU
+                    verbose=False,  # Suppress verbose output
+                    condition_on_previous_text=True,  # Better context
+                    initial_prompt=None,  # Can add prompt for better accuracy
+                    temperature=0.0,  # More deterministic
+                    best_of=1,  # Faster
+                    beam_size=5  # Better accuracy
+                )
+        finally:
+            # Restore stdout/stderr
+            sys.stdout = old_stdout
+            sys.stderr = old_stderr
         
         # Extract segments
         segments = []
@@ -156,7 +191,7 @@ def transcribe_audio(audio_data, model=None, sample_rate=None, language=None):
         }
     
     except Exception as e:
-        print(f"Error in transcription: {e}")
+        # Suppress error messages to console (only log to file)
         return {
             'text': '',
             'language': None,
@@ -204,13 +239,17 @@ def transcribe_audio_file(filepath, model=None, language=None):
                     'confidence': 0.0
                 }
         
-        # Whisper can load audio files directly
-        result = model.transcribe(
-            filepath,
-            language=language,
-            task="transcribe",
-            fp16=False if WHISPER_COMPUTE_TYPE == "float32" else True
-        )
+        # Whisper can load audio files directly (suppress verbose output)
+        import warnings
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            result = model.transcribe(
+                filepath,
+                language=language,
+                task="transcribe",
+                fp16=False if WHISPER_COMPUTE_TYPE == "float32" else True,
+                verbose=False  # Suppress Whisper progress output
+            )
         
         segments = []
         if 'segments' in result:
@@ -229,7 +268,7 @@ def transcribe_audio_file(filepath, model=None, language=None):
         }
     
     except Exception as e:
-        print(f"Error transcribing file: {e}")
+        # Suppress error messages to console
         return {
             'text': '',
             'language': None,

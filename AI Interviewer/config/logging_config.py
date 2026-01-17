@@ -53,12 +53,11 @@ def setup_logging(log_level=None, log_to_file=None, log_file_path=None):
     # Clear existing handlers
     logger.handlers.clear()
     
-    # Console handler
+    # Console handler - only show errors and warnings, suppress info/debug
     console_handler = logging.StreamHandler(sys.stdout)
-    console_handler.setLevel(getattr(logging, log_level.upper(), logging.INFO))
+    console_handler.setLevel(logging.ERROR)  # Only show errors in console
     console_format = logging.Formatter(
-        '%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-        datefmt='%H:%M:%S'
+        '%(message)s'  # Simple format without timestamps
     )
     console_handler.setFormatter(console_format)
     logger.addHandler(console_handler)

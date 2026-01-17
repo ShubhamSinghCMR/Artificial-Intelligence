@@ -72,12 +72,15 @@ def validate_environment():
         logger.warning("Whisper not available")
     
     try:
-        from llama_cpp import Llama
-        logger.info("  ✓ llama-cpp-python available")
-    except ImportError:
-        logger.warning("llama-cpp-python not installed (LLM will use fallbacks)")
-        logger.warning("Install: pip install llama-cpp-python")
-        logger.warning("See INSTALL_LLM.md for details")
+        from llm.loader import check_ollama_available
+        if check_ollama_available():
+            logger.info("  ✓ Ollama available and running")
+        else:
+            logger.warning("Ollama is not running (LLM will use fallbacks)")
+            logger.warning("Install from: https://ollama.com/download")
+            logger.warning("Then run: ollama pull llama3.2")
+    except Exception as e:
+        logger.warning(f"Error checking Ollama: {e} (LLM will use fallbacks)")
     
     if errors:
         logger.warning("="*60)
